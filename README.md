@@ -4,6 +4,13 @@ A small, fast **evasion-artifact detector** for Windows PE binaries (`.exe` / `.
 
 Where tooling like [Mangle](https://github.com/optiv/Mangle) *forges* the traces that let a binary slip past an EDR, PE-Sentinel sits on the other side of the fence: it **reads those same traces and flags them**. It is strictly read-only and never writes to the file it inspects.
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: light)" srcset="assets/demo-light.svg">
+    <img alt="PE-Sentinel flagging an inflated binary" src="assets/demo.svg" width="780">
+  </picture>
+</p>
+
 ## What it detects
 
 | Check | ID | What it means |
