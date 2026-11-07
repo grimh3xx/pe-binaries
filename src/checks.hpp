@@ -1,4 +1,4 @@
-// PE-Sentinel — evasion-artifact heuristics.
+// PE-Binaries — evasion-artifact heuristics.
 // Each check inspects a parsed Image and emits zero or more Findings.
 #pragma once
 

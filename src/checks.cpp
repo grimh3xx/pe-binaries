@@ -95,7 +95,7 @@ static void checkSignature(const Image& img, std::vector<Finding>& out) {
     out.push_back({Severity::Info, "SIGNED", "Authenticode signature present",
         "Certificate table of " + std::to_string(img.security.Size) +
         " bytes at offset " + std::to_string(img.security.VirtualAddress) +
-        ". (PE-Sentinel reports presence; it does not validate the chain.)"});
+        ". (PE-Binaries reports presence; it does not validate the chain.)"});
 }
 
 // --- Timestamp anomalies ---------------------------------------------------

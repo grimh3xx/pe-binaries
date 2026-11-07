@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(pe-sentinel CXX)
+project(pe-binaries CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -8,13 +8,13 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
-add_executable(pe-sentinel
+add_executable(pe-binaries
     src/main.cpp
     src/pe.cpp
     src/checks.cpp)
 
 if(MSVC)
-    target_compile_options(pe-sentinel PRIVATE /W4)
+    target_compile_options(pe-binaries PRIVATE /W4)
 else()
-    target_compile_options(pe-sentinel PRIVATE -Wall -Wextra)
+    target_compile_options(pe-binaries PRIVATE -Wall -Wextra)
 endif()

@@ -1,123 +1,215 @@
 #!/usr/bin/env python3
-"""Render the terminal-style demo art for PE-Sentinel into assets/ (dark + light).
+"""Render the animated terminal demo for PE-Binaries into docs/demo.svg.
 
-Reuses the CentralTech/grimh3xx brand toolchain (JBM font embedding) from the
-sibling `github-profile` repo so the artwork matches the rest of the profile.
+Same "filmstrip" model as the SecureArchSetup demo: every frame is a full
+snapshot of the screen, stacked vertically, and a CSS keyframe animation steps
+the strip through them to play back a typed session. Font embedding (JBM) is
+reused from the sibling github-profile brand toolchain so the art matches the
+rest of grimh3xx's repos.
 
-Usage: python3 tools/gen_demo.py
+Usage: python3 tools/gen_demo.py [--static N]   (--static dumps frame N, no anim)
 """
 import sys
 from pathlib import Path
 from xml.sax.saxutils import escape
 
 ROOT = Path(__file__).resolve().parent.parent
-OUT = ROOT / "assets"
+DOCS = ROOT / "docs"
 
-# Pull the brand font-embedder (finish) from the profile repo if it is present.
 BRAND = Path.home() / "github-profile" / "scripts"
 sys.path.insert(0, str(BRAND))
 try:
     from brand import finish  # type: ignore
-except Exception:  # pragma: no cover - art still renders, just without embedded font
+except Exception:
     def finish(svg, faces=None):
         return svg
 
 MONO = "'JBM','JetBrains Mono',ui-monospace,Consolas,Menlo,monospace"
 
-THEMES = {
-    "": {  # dark
-        "bg": "#0B0F17", "bg2": "#0E1420", "bar": "#111826", "border": "#1E2A3D",
-        "text": "#C5CFDD", "muted": "#8B98AD", "title": "#F1F5FB",
-        "cyan": "#22D3EE", "blue": "#3B82F6",
-        "red": "#F87171", "amber": "#FBBF24", "green": "#34D399",
-    },
-    "-light": {
-        "bg": "#FFFFFF", "bg2": "#F6F8FB", "bar": "#EEF2F7", "border": "#D8DEE8",
-        "text": "#334155", "muted": "#5B6678", "title": "#0F172A",
-        "cyan": "#0891B2", "blue": "#2563EB",
-        "red": "#DC2626", "amber": "#B45309", "green": "#059669",
-    },
+# CentralTech palette
+C = {
+    "user": "#22D3EE", "punct": "#D5DDE8", "path": "#60A5FA", "cmd": "#F1F5FB",
+    "text": "#C5CFDD", "muted": "#8B98AD", "cyan": "#22D3EE",
+    "red": "#F87171", "amber": "#FBBF24", "green": "#34D399", "white": "#F1F5FB",
 }
 
-# The demo content as (text, color-key, bold) segments, one list per line.
-# color-key None -> default text.
-def build_lines(th):
-    B, M, T = "blue", "muted", None
-    def seg(t, c=None, b=False): return (t, c, b)
-    return [
-        [seg("$ ", "green", True), seg("pe-sentinel --color suspect.exe")],
-        [],
-        [seg("  ___ ___     ___         _   _           _", "cyan", True)],
-        [seg(" | _ \\ __|___/ __| ___ _ | |_(_)_ _  ___ | |", "cyan", True)],
-        [seg(" |  _/ _|___\\__ \\/ -_) ' \\  _| | ' \\/ -_)| |", "cyan", True)],
-        [seg(" |_| |___|  |___/\\___|_||_\\__|_|_||_\\___||_|", "cyan", True)],
-        [seg(" evasion-artifact detector for PE binaries", "muted")],
-        [],
-        [seg("=== suspect.exe ===", None, True)],
-        [seg("  type        : PE32+ x64 EXE")],
-        [seg("  file size   : 24 241 841 bytes")],
-        [seg("  sections    : 19")],
-        [seg("  overlay     : 21 578 417 bytes @ offset 2663424")],
-        [seg("  findings    : "), seg("2", None, True)],
-        [seg("  [HIGH  ] ", "red", True), seg("BLOAT_OVERLAY        ", None, True),
-         seg("Oversized file overlay")],
-        [seg("            Overlay 89% of file, entropy 0.24 — size inflation.", "muted")],
-        [seg("  [LOW   ] ", "blue", True), seg("UNSIGNED             ", None, True),
-         seg("No Authenticode signature")],
-        [seg("            No certificate table — weak provenance.", "muted")],
-        [],
-        [seg("$ ", "green", True), seg("echo $?")],
-        [seg("1", "amber", True), seg("   (--strict: MEDIUM/HIGH present)", "muted")],
+CW = 8.4          # JBM advance width at font-size 14
+FS = 14
+LH = 23           # line height
+Y0 = 18           # first baseline inside the viewport
+VIEW_W, VIEW_H = 874, 576
+MAXLINES = (VIEW_H - Y0) // LH
+W, H = 910, 652
+
+# timing weights (ticks)
+TYPE, OUT, PAUSE, HOLD = 1, 2, 7, 44
+
+
+def seg(t, color="text", bold=False):
+    return (t, color, bold)
+
+
+def prompt():
+    return [seg("grimh3xx@centraltech", "user"), seg(":", "punct"),
+            seg("~/pe-binaries", "path"), seg("$ ", "punct")]
+
+
+class Session:
+    def __init__(self):
+        self.history = []      # committed lines
+        self.active = None     # current input line (list of segs) or None
+        self.frames = []       # list of (lines snapshot)
+        self.durs = []
+
+    def _snap(self, dur):
+        lines = [l[:] for l in self.history]
+        if self.active is not None:
+            lines.append(self.active[:])
+        self.frames.append(lines)
+        self.durs.append(dur)
+
+    def type(self, text):
+        self.active = prompt() + [seg("", "cmd")]
+        for ch in text:
+            s = self.active[-1]
+            self.active[-1] = seg(s[0] + ch, "cmd")
+            self._snap(TYPE)
+        self._snap(PAUSE)
+
+    def enter(self):
+        if self.active is not None:
+            self.history.append(self.active)
+            self.active = None
+
+    def out(self, line, dur=OUT):
+        self.history.append(line if isinstance(line, list) else [seg(line)])
+        self._snap(dur)
+
+    def blank(self):
+        self.out([seg("")], dur=1)
+
+    def cursor_hold(self):
+        self.active = prompt() + [seg("█", "cyan")]
+        self._snap(HOLD)
+
+
+def build():
+    s = Session()
+    s.type("./pe-binaries --color suspect.exe")
+    s.enter()
+    banner = [
+        " ___  ___       ___  _                   _",
+        "| _ \\| __| ___ | _ )(_) _ _   __ _  _ _ (_) ___  ___",
+        "|  _/| _| |___|| _ \\| || ' \\ / _` || '_|| |/ -_)(_-<",
+        "|_|  |___|     |___/|_||_||_|\\__,_||_|  |_|\\___|/__/",
     ]
+    for b in banner:
+        s.out([seg(b, "cyan", True)], dur=1)
+    s.out([seg(" evasion-artifact detector for PE binaries", "muted")], dur=OUT)
+    s.blank()
+    s.out([seg("=== suspect.exe ===", "white", True)])
+    s.out("  type        : PE32+ x64 EXE")
+    s.out("  file size   : 24 241 841 bytes")
+    s.out("  sections    : 19")
+    s.out("  overlay     : 21 578 417 bytes @ offset 2663424")
+    s.out([seg("  findings    : "), seg("2", "white", True)])
+    s.out([seg("  [HIGH  ] ", "red", True), seg("BLOAT_OVERLAY   ", "white", True),
+           seg("Oversized file overlay")])
+    s.out([seg("            Overlay 89% of file, entropy 0.24 — size inflation.", "muted")])
+    s.out([seg("  [LOW   ] ", "path", True), seg("UNSIGNED        ", "white", True),
+           seg("No Authenticode signature")])
+    s.out([seg("            No certificate table — weak provenance.", "muted")])
+    s.blank()
+    s.type("echo $?")
+    s.enter()
+    s.out([seg("1", "amber", True)])
+    s.cursor_hold()
+    return s
 
 
-def render(suffix):
-    th = THEMES[suffix]
-    lines = build_lines(th)
-    pad_x, bar_h, top, lh, fs = 26, 40, 16, 21, 14.5
-    ch = fs * 0.6  # JBM advance width
-    w = 900
-    h = bar_h + top + len(lines) * lh + top
+def render_rows(frames):
+    """Emit <g id="rN"> defs — one full-screen snapshot each."""
+    out = []
+    for n, lines in enumerate(frames):
+        window = lines[-MAXLINES:] if len(lines) > MAXLINES else lines
+        parts = [f'<g id="r{n}">']
+        for j, line in enumerate(window):
+            y = Y0 + j * LH
+            x = 0.0
+            for text, color, bold in line:
+                if text:
+                    wt = ' font-weight="700"' if bold else ""
+                    tl = len(text) * CW
+                    parts.append(
+                        f'<text x="{x:.1f}" y="{y}" fill="{C[color]}"{wt} '
+                        f'textLength="{tl:.1f}" lengthAdjust="spacingAndGlyphs">'
+                        f'{escape(text)}</text>')
+                x += len(text) * CW
+        parts.append("</g>")
+        out.append("".join(parts))
+    return "".join(out)
 
-    parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{int(h)}" '
-        f'viewBox="0 0 {w} {int(h)}" role="img" aria-label="PE-Sentinel demo">',
-        '<defs>'
-        f'<linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">'
-        f'<stop offset="0" stop-color="{th["bg"]}"/><stop offset="1" stop-color="{th["bg2"]}"/></linearGradient>'
-        f'<clipPath id="r"><rect width="{w}" height="{int(h)}" rx="12"/></clipPath>'
-        '</defs>',
-        f'<g clip-path="url(#r)">',
-        f'<rect width="{w}" height="{int(h)}" fill="url(#bg)"/>',
-        # title bar
-        f'<rect width="{w}" height="{bar_h}" fill="{th["bar"]}"/>',
-        f'<circle cx="24" cy="{bar_h/2:.0f}" r="6" fill="#FF5F56"/>',
-        f'<circle cx="44" cy="{bar_h/2:.0f}" r="6" fill="#FFBD2E"/>',
-        f'<circle cx="64" cy="{bar_h/2:.0f}" r="6" fill="#27C93F"/>',
-        f'<text x="{w/2:.0f}" y="{bar_h/2+5:.0f}" text-anchor="middle" font-family="{MONO}" '
-        f'font-size="13" fill="{th["muted"]}">pe-sentinel — zsh</text>',
-    ]
 
-    y = bar_h + top + fs
-    for line in lines:
-        x = pad_x
-        for text, color, bold in line:
-            fill = th[color] if color else th["text"]
-            weight = ' font-weight="700"' if bold else ""
-            parts.append(
-                f'<text x="{x:.1f}" y="{y:.1f}" font-family="{MONO}" font-size="{fs}" '
-                f'fill="{fill}"{weight} xml:space="preserve">{escape(text)}</text>')
-            x += len(text) * ch
-        y += lh
-    parts.append(f'</g><rect x="0.5" y="0.5" width="{w-1}" height="{int(h)-1}" rx="12" '
-                 f'fill="none" stroke="{th["border"]}"/>')
-    parts.append('</svg>\n')
-    return finish("".join(parts), {("JBM", 400), ("JBM", 700)})
+def keyframes(durs):
+    total = sum(durs)
+    cum, stops = 0, []
+    for i, d in enumerate(durs):
+        pct = cum / total * 100
+        stops.append(f"{pct:.3f}%{{transform:translateY(-{i * VIEW_H}px)}}")
+        cum += d
+    stops.append(f"100%{{transform:translateY(-{(len(durs) - 1) * VIEW_H}px)}}")
+    dur_s = max(10, round(total * 0.09))
+    css = ("@keyframes play{" + "".join(stops) + "}"
+           f".strip{{animation:play {dur_s}s steps(1,end) infinite}}"
+           "@media(prefers-reduced-motion){.strip{animation:none;"
+           f"transform:translateY(-{(len(durs) - 1) * VIEW_H}px)}}}}")
+    return css
+
+
+def render(static_frame=None):
+    s = build()
+    rows = render_rows(s.frames)
+    nframes = len(s.frames)
+
+    strip_items = "".join(
+        f'<g transform="translate(0,{i * VIEW_H})"><use href="#r{i}"/></g>'
+        for i in range(nframes))
+
+    if static_frame is None:
+        css = keyframes(s.durs)
+        strip_open = '<g class="strip" '
+    else:
+        f = min(static_frame, nframes - 1)
+        css = ""
+        strip_open = f'<g transform="translate(0,{-f * VIEW_H})" '
+
+    svg = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" '
+        f'viewBox="0 0 {W} {H}" role="img" aria-label="pe-binaries suspect.exe">'
+        f'<style>{css}</style>'
+        f'<defs>{rows}</defs>'
+        f'<rect x="0.5" y="0.5" width="{W-1}" height="{H-1}" rx="12" fill="#111826" stroke="#1E2A3D"/>'
+        f'<path d="M0 40H{W}" stroke="#1E2A3D"/>'
+        '<circle cx="24" cy="20" r="6" fill="#FF5F57"/>'
+        '<circle cx="44" cy="20" r="6" fill="#FEBC2E"/>'
+        '<circle cx="64" cy="20" r="6" fill="#28C840"/>'
+        f'<text x="{W/2:.0f}" y="25" text-anchor="middle" fill="#8B98AD" '
+        f'font-family="{MONO}" font-size="13">pe-binaries suspect.exe</text>'
+        f'<svg x="18" y="58" width="{VIEW_W}" height="{VIEW_H}" '
+        f'viewBox="0 0 {VIEW_W} {VIEW_H}" overflow="hidden">'
+        f'{strip_open}font-family="{MONO}" font-size="{FS}" xml:space="preserve">'
+        f'{strip_items}</g></svg></svg>\n')
+    return finish(svg, {("JBM", 400), ("JBM", 700)})
 
 
 if __name__ == "__main__":
-    OUT.mkdir(exist_ok=True)
-    for suffix in THEMES:
-        name = f"demo{suffix}.svg"
-        (OUT / name).write_text(render(suffix), encoding="utf-8")
-        print("wrote", OUT / name)
+    DOCS.mkdir(exist_ok=True)
+    if len(sys.argv) >= 3 and sys.argv[1] == "--static":
+        out = render(static_frame=int(sys.argv[2]))
+        p = Path("/tmp/demo-static.svg")
+        p.write_text(out, encoding="utf-8")
+        print("wrote", p)
+    else:
+        p = DOCS / "demo.svg"
+        p.write_text(render(), encoding="utf-8")
+        print("wrote", p, f"({len(render())//1024} KB,", "animated)")

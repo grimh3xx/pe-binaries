@@ -1,4 +1,4 @@
-// PE-Sentinel — portable PE structures and reader
+// PE-Binaries — portable PE structures and reader
 // Defensive binary-analysis tool. Read-only: never modifies the target.
 #pragma once
 

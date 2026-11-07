@@ -1,4 +1,4 @@
-// PE-Sentinel — detects binary-evasion artifacts in PE files.
+// PE-Binaries — detects binary-evasion artifacts in PE files.
 // Read-only: it inspects and reports; it never alters the target.
 #include "checks.hpp"
 #include "pe.hpp"
@@ -50,19 +50,18 @@ const char* severityColor(pes::Severity s) {
 }
 
 void printBanner() {
-    std::printf("%s%s", C.bold, C.cyan);
-    std::printf(
-        "  ___ ___     ___         _   _           _\n"
-        " | _ \\ __|___/ __| ___ _ | |_(_)_ _  ___ | |\n"
-        " |  _/ _|___\\__ \\/ -_) ' \\  _| | ' \\/ -_)| |\n"
-        " |_| |___|  |___/\\___|_||_\\__|_|_||_\\___||_|\n");
-    std::printf("%s", C.reset);
+    static const char* art = R"ART( ___  ___       ___  _                   _
+| _ \| __| ___ | _ )(_) _ _   __ _  _ _ (_) ___  ___
+|  _/| _| |___|| _ \| || ' \ / _` || '_|| |/ -_)(_-<
+|_|  |___|     |___/|_||_||_|\__,_||_|  |_|\___|/__/
+)ART";
+    std::printf("%s%s%s%s", C.bold, C.cyan, art, C.reset);
     std::printf("%s evasion-artifact detector for PE binaries%s\n\n", C.dim, C.reset);
 }
 
 void printUsage(const char* argv0) {
     std::printf(
-        "PE-Sentinel — evasion-artifact detector for PE binaries\n"
+        "PE-Binaries — evasion-artifact detector for PE binaries\n"
         "\n"
         "usage: %s [options] <file.exe|file.dll> [more files...]\n"
         "\n"
