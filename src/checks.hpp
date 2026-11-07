@@ -22,4 +22,8 @@ const char* severityName(Severity s);
 // Run every heuristic over the image and return the findings, worst first.
 std::vector<Finding> analyze(const Image& img);
 
+// Weighted 0..100 risk score derived from the findings, plus a short label.
+int riskScore(const std::vector<Finding>& findings);
+const char* riskLabel(int score);
+
 } // namespace pes

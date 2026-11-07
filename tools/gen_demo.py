@@ -110,15 +110,21 @@ def build():
     s.out([seg("=== suspect.exe ===", "white", True)])
     s.out("  type        : PE32+ x64 EXE")
     s.out("  file size   : 24 241 841 bytes")
+    s.out([seg("  sha256      : "), seg("a5dceeb8fe8bd74936e1b91cefb23ac9…", "muted")])
+    s.out([seg("  imphash     : "), seg("803cd9572c5617dae46ba7964100e0ca", "muted")])
+    s.out("  imports     : 130 functions across 13 DLLs")
     s.out("  sections    : 19")
-    s.out("  overlay     : 21 578 417 bytes @ offset 2663424")
-    s.out([seg("  findings    : "), seg("2", "white", True)])
+    s.out([seg("  risk        : "), seg("64/100  HIGH RISK", "red", True)])
+    s.out([seg("  findings    : "), seg("4", "white", True)])
     s.out([seg("  [HIGH  ] ", "red", True), seg("BLOAT_OVERLAY   ", "white", True),
            seg("Oversized file overlay")])
     s.out([seg("            Overlay 89% of file, entropy 0.24 — size inflation.", "muted")])
+    s.out([seg("  [HIGH  ] ", "red", True), seg("RWX_SECTION     ", "white", True),
+           seg("Writable + executable section")])
+    s.out([seg("  [MEDIUM] ", "amber", True), seg("SUSPICIOUS_IMPORTS ", "white", True),
+           seg("injection: VirtualAllocEx…")])
     s.out([seg("  [LOW   ] ", "path", True), seg("UNSIGNED        ", "white", True),
            seg("No Authenticode signature")])
-    s.out([seg("            No certificate table — weak provenance.", "muted")])
     s.blank()
     s.type("echo $?")
     s.enter()

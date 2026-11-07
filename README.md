@@ -20,13 +20,24 @@ file it inspects.
 |---|---|
 | **Size inflation** (`BLOAT_OVERLAY`) | A large, low-entropy overlay appended past the last section — padding to exceed an AV's maximum scan size. Severity scales with how much of the file is filler. |
 | **Padded section** (`BLOAT_SECTION`) | A section whose raw bytes dwarf its virtual size, with low entropy — bytes that never load into memory. |
+| **RWX section** (`RWX_SECTION`) | A section that is both writable and executable — self-modifying code, an unpacking stub or injected shellcode. |
+| **Entry-point anomaly** (`EP_OUTSIDE` / `EP_NONEXEC` / `EP_WRITABLE`) | Execution starts outside every section, in a non-executable section, or in a writable one — packer/loader tricks. |
+| **Suspicious imports** (`SUSPICIOUS_IMPORTS`) | Injection, anti-debug, token-manipulation and hooking APIs, grouped and weighted. A lone helper is weak; a real injection combo is `HIGH`. |
+| **Hidden imports** (`DYNAMIC_RESOLUTION` / `FEW_IMPORTS`) | `GetProcAddress` + `LoadLibrary` with a thin import table, or almost no imports behind real code — the import table is being hidden. |
+| **TLS callback** (`TLS_CALLBACK`) | Code that runs before the entry point — early init, but also anti-debug and stealth execution. |
 | **Stripped Go build ID** (`GO_BUILDID_STRIPPED`) | Go runtime markers present but the build ID removed — a known signature-evasion step. |
-| **Missing signature** (`UNSIGNED`) | No Authenticode certificate table. |
+| **Signature & checksum** (`UNSIGNED` / `CHECKSUM_INVALID`) | No Authenticode certificate table, or a signed file whose header checksum no longer matches — i.e. modified after signing. |
 | **Timestamp forgery** (`TS_ZERO` / `TS_FUTURE`) | Zeroed or future `TimeDateStamp` — erased or tampered build provenance. |
-| **Packing** (`HIGH_ENTROPY`) | A high-entropy executable section, suggesting packing or encryption. |
+| **Packing** (`HIGH_ENTROPY` / `PACKER_SECTION` / `ABNORMAL_SECTION`) | High-entropy sections, known packer section layouts, or non-standard section names. |
 
-Findings are ranked worst-first and tagged `INFO` / `LOW` / `MEDIUM` / `HIGH`. Every check
-reads the file; none of them modify it.
+Findings are ranked worst-first, tagged `INFO` / `LOW` / `MEDIUM` / `HIGH`, and rolled up
+into a **0–100 risk score** (`CLEAN` → `HIGH RISK`). Every check reads the file; none modify it.
+
+## IOCs
+
+For triage and threat-intel pivots, every report includes **SHA-256**, **MD5** and a
+pefile-compatible **imphash** (import hash) — the same value VirusTotal and most sandboxes
+use to cluster related samples — plus the import table (functions per DLL).
 
 ## Build
 
@@ -44,17 +55,19 @@ pe-binaries [options] <file.exe|file.dll> [more files...]
 
   -q, --quiet     only print findings, skip the image summary
   -s, --strict    exit non-zero if any MEDIUM or HIGH finding is present
+      --json      emit a JSON report instead of text
       --color     force ANSI color (default: auto when stdout is a TTY)
       --no-color  disable ANSI color
   -h, --help      show this help
 ```
 
 `--strict` makes it usable as a CI / pipeline gate: a MEDIUM or HIGH finding fails the run.
+`--json` emits a machine-readable report (hashes, imphash, risk score, findings) for pipelines.
 
 ```bash
-pe-binaries suspect.exe                 # full report
-pe-binaries -q -s build/*.exe           # gate a build directory
-pe-binaries --no-color sample.dll | tee report.txt
+pe-binaries suspect.exe                       # full report
+pe-binaries -q -s build/*.exe                 # gate a build directory
+pe-binaries --json sample.dll | jq .risk_score
 ```
 
 ## How it reads a PE
@@ -77,8 +90,11 @@ not to perform it.
 ## Development
 
 ```bash
-python3 tools/gen_demo.py          # regenerate docs/demo.svg (animated terminal)
+python3 tests/test.py build/pe-binaries   # functional tests (synthetic PE fixtures)
+python3 tools/gen_demo.py                 # regenerate docs/demo.svg (animated terminal)
 ```
+
+CI builds on Linux and Windows and runs the test suite on every push.
 
 The banner and demo SVGs are generated art (JBM font embedded); they match the rest of the
 [grimh3xx](https://github.com/grimh3xx) profile.

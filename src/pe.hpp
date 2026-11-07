@@ -99,11 +99,21 @@ constexpr int DIR_SECURITY = 4;
 
 struct Section {
     std::string name;
+    uint32_t    virtualAddr = 0;
     uint32_t    virtualSize = 0;
     uint32_t    rawSize = 0;
     uint32_t    rawOffset = 0;
     uint32_t    characteristics = 0;
     double      entropy = 0.0;   // 0..8 bits/byte over the raw bytes
+
+    bool exec()  const { return characteristics & 0x20000000u; } // MEM_EXECUTE
+    bool write() const { return characteristics & 0x80000000u; } // MEM_WRITE
+};
+
+// One imported DLL and the symbols pulled from it.
+struct Import {
+    std::string dll;
+    std::vector<std::string> funcs;   // "ord123" for ordinal-only imports
 };
 
 // A parsed PE image. Holds just enough to reason about evasion artifacts.
@@ -114,9 +124,17 @@ struct Image {
     uint32_t    timeDateStamp = 0;
     uint16_t    numberOfSections = 0;
     uint32_t    sizeOfImage = 0;
+    uint32_t    sizeOfHeaders = 0;
+    uint32_t    entryPoint = 0;      // AddressOfEntryPoint (RVA)
+    uint64_t    imageBase = 0;
+    uint32_t    checksumStored = 0;  // OptionalHeader.CheckSum
     uint64_t    fileSize = 0;
 
     std::vector<Section> sections;
+    std::vector<DataDirectory> dirs; // all data directories, by index
+
+    std::vector<Import> imports;     // parsed import table
+    bool        hasTlsCallbacks = false;
 
     // Authenticode security directory (certificate table), if present.
     DataDirectory security{0, 0};
@@ -125,8 +143,16 @@ struct Image {
     uint64_t overlayOffset = 0;
     uint64_t overlaySize = 0;
 
+    // IOCs (filled by load()).
+    std::string sha256;
+    std::string md5;
+    std::string imphash;             // pefile-compatible import hash
+
     // Raw file bytes, kept for entropy / string scans.
     std::vector<uint8_t> bytes;
+
+    // Map a relative virtual address to a file offset (0 if unmapped).
+    uint64_t rvaToOffset(uint32_t rva) const;
 };
 
 // Parse a PE file from disk. Returns nullopt with `error` set on failure.

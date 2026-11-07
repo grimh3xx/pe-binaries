@@ -15,3 +15,9 @@ jobs:
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
       - name: Build
         run: cmake --build build --config Release -j
+      - name: Test (Linux)
+        if: runner.os == 'Linux'
+        run: python3 tests/test.py build/pe-binaries
+      - name: Test (Windows)
+        if: runner.os == 'Windows'
+        run: python tests/test.py build/Release/pe-binaries.exe

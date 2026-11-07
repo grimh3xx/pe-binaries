@@ -11,7 +11,8 @@ endif()
 add_executable(pe-binaries
     src/main.cpp
     src/pe.cpp
-    src/checks.cpp)
+    src/checks.cpp
+    src/hashing.cpp)
 
 if(MSVC)
     target_compile_options(pe-binaries PRIVATE /W4)

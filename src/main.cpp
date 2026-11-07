@@ -68,6 +68,7 @@ void printUsage(const char* argv0) {
         "options:\n"
         "  -q, --quiet     only print findings, skip the image summary\n"
         "  -s, --strict    exit non-zero if any MEDIUM or HIGH finding is present\n"
+        "      --json      emit a JSON report instead of text\n"
         "      --color     force ANSI color (default: auto when stdout is a TTY)\n"
         "      --no-color  disable ANSI color\n"
         "  -h, --help      show this help\n",
@@ -84,14 +85,27 @@ const char* machineName(uint16_t m) {
     }
 }
 
+size_t importedCount(const pes::Image& img) {
+    size_t n = 0;
+    for (const auto& imp : img.imports) n += imp.funcs.size();
+    return n;
+}
+
 void printSummary(const pes::Image& img) {
     std::printf("  type        : PE32%s %s %s\n", img.is64 ? "+" : "",
                 machineName(img.machine), img.isDll ? "DLL" : "EXE");
     std::printf("  file size   : %llu bytes\n", (unsigned long long)img.fileSize);
+    std::printf("  sha256      : %s\n", img.sha256.c_str());
+    std::printf("  md5         : %s\n", img.md5.c_str());
+    if (!img.imphash.empty())
+        std::printf("  imphash     : %s\n", img.imphash.c_str());
+    std::printf("  imports     : %zu functions across %zu DLLs\n",
+                importedCount(img), img.imports.size());
     std::printf("  sections    : %u\n", img.numberOfSections);
     for (const auto& s : img.sections) {
-        std::printf("    %-9s raw=%-10u virt=%-10u entropy=%.2f\n",
-                    s.name.c_str(), s.rawSize, s.virtualSize, s.entropy);
+        std::printf("    %-9s raw=%-10u virt=%-10u entropy=%.2f%s%s\n",
+                    s.name.c_str(), s.rawSize, s.virtualSize, s.entropy,
+                    s.exec() ? " X" : "", s.write() ? " W" : "");
     }
     if (img.overlaySize) {
         std::printf("  overlay     : %llu bytes @ offset %llu\n",
@@ -100,7 +114,59 @@ void printSummary(const pes::Image& img) {
     }
 }
 
-int analyzeFile(const std::string& path, bool quiet, bool strict) {
+// Minimal JSON string escaping.
+std::string jsonEsc(const std::string& s) {
+    std::string o;
+    for (char c : s) {
+        switch (c) {
+            case '"':  o += "\\\""; break;
+            case '\\': o += "\\\\"; break;
+            case '\n': o += "\\n";  break;
+            case '\t': o += "\\t";  break;
+            default:
+                if (static_cast<unsigned char>(c) < 0x20) { char b[8]; std::snprintf(b, sizeof b, "\\u%04x", c); o += b; }
+                else o += c;
+        }
+    }
+    return o;
+}
+
+int printJson(const std::string& path, const pes::Image& img,
+              const std::vector<pes::Finding>& findings, bool strict) {
+    int score = pes::riskScore(findings);
+    std::printf("{\n");
+    std::printf("  \"file\": \"%s\",\n", jsonEsc(path).c_str());
+    std::printf("  \"type\": \"PE32%s %s %s\",\n", img.is64 ? "+" : "",
+                machineName(img.machine), img.isDll ? "DLL" : "EXE");
+    std::printf("  \"size\": %llu,\n", (unsigned long long)img.fileSize);
+    std::printf("  \"sha256\": \"%s\",\n", img.sha256.c_str());
+    std::printf("  \"md5\": \"%s\",\n", img.md5.c_str());
+    std::printf("  \"imphash\": \"%s\",\n", img.imphash.c_str());
+    std::printf("  \"imported_functions\": %zu,\n", importedCount(img));
+    std::printf("  \"risk_score\": %d,\n", score);
+    std::printf("  \"risk_label\": \"%s\",\n", pes::riskLabel(score));
+    std::printf("  \"findings\": [");
+    bool strictHit = false;
+    for (size_t i = 0; i < findings.size(); ++i) {
+        const auto& f = findings[i];
+        std::printf("%s\n    {\"severity\": \"%s\", \"id\": \"%s\", \"title\": \"%s\", \"detail\": \"%s\"}",
+                    i ? "," : "", pes::severityName(f.severity), f.id.c_str(),
+                    jsonEsc(f.title).c_str(), jsonEsc(f.detail).c_str());
+        if (f.severity == pes::Severity::Medium || f.severity == pes::Severity::High)
+            strictHit = true;
+    }
+    std::printf("%s]\n}\n", findings.empty() ? "" : "\n  ");
+    return (strict && strictHit) ? 1 : 0;
+}
+
+const char* scoreColor(int score) {
+    if (score >= 60) return C.red;
+    if (score >= 25) return C.yellow;
+    if (score > 0)   return C.blue;
+    return C.green;
+}
+
+int analyzeFile(const std::string& path, bool quiet, bool strict, bool json) {
     std::string err;
     auto img = pes::load(path, err);
     if (!img) {
@@ -108,10 +174,15 @@ int analyzeFile(const std::string& path, bool quiet, bool strict) {
         return 2;
     }
 
+    auto findings = pes::analyze(*img);
+    if (json) return printJson(path, *img, findings, strict);
+
+    int score = pes::riskScore(findings);
     std::printf("\n%s=== %s ===%s\n", C.bold, path.c_str(), C.reset);
     if (!quiet) printSummary(*img);
 
-    auto findings = pes::analyze(*img);
+    std::printf("  risk        : %s%d/100  %s%s\n",
+                scoreColor(score), score, pes::riskLabel(score), C.reset);
     std::printf("  findings    : %s%zu%s\n",
                 findings.empty() ? C.green : C.bold, findings.size(), C.reset);
 
@@ -131,7 +202,7 @@ int analyzeFile(const std::string& path, bool quiet, bool strict) {
 } // namespace
 
 int main(int argc, char** argv) {
-    bool quiet = false, strict = false;
+    bool quiet = false, strict = false, json = false;
     enum { AUTO, ON, OFF } color = AUTO;
     std::vector<std::string> files;
 
@@ -140,19 +211,20 @@ int main(int argc, char** argv) {
         if (a == "-h" || a == "--help") { printUsage(argv[0]); return 0; }
         else if (a == "-q" || a == "--quiet") quiet = true;
         else if (a == "-s" || a == "--strict") strict = true;
+        else if (a == "--json") json = true;
         else if (a == "--no-color") color = OFF;
         else if (a == "--color") color = ON;
         else files.push_back(a);
     }
 
-    if (color == ON || (color == AUTO && ISATTY(FILENO(stdout)))) enableColor();
+    if (!json && (color == ON || (color == AUTO && ISATTY(FILENO(stdout))))) enableColor();
 
     if (files.empty()) { printUsage(argv[0]); return 2; }
-    printBanner();
+    if (!json) printBanner();
 
     int worst = 0;
     for (const auto& f : files) {
-        int rc = analyzeFile(f, quiet, strict);
+        int rc = analyzeFile(f, quiet, strict, json);
         if (rc > worst) worst = rc;
     }
     return worst;

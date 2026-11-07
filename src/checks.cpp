@@ -1,8 +1,11 @@
 #include "checks.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <ctime>
+#include <set>
+#include <string>
 
 namespace pes {
 
@@ -13,6 +16,11 @@ const char* severityName(Severity s) {
         case Severity::Low:    return "LOW";
         default:               return "INFO";
     }
+}
+
+static std::string lower(std::string s) {
+    for (auto& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
 }
 
 // Does the raw image contain this ASCII needle anywhere?
@@ -32,8 +40,6 @@ static bool looksGo(const Image& img) {
 
 // --- Bloat: oversized overlay or a huge low-entropy section ----------------
 static void checkBloat(const Image& img, std::vector<Finding>& out) {
-    // An overlay larger than a few MB, or more than half the file, is a
-    // classic size-inflation trick to exceed an AV's max scan size.
     if (img.overlaySize > 0) {
         double frac = static_cast<double>(img.overlaySize) / img.fileSize;
         double entr = entropy(img.bytes.data() + img.overlayOffset,
@@ -49,9 +55,6 @@ static void checkBloat(const Image& img, std::vector<Finding>& out) {
                 ". Low-entropy padding this large is a hallmark of size inflation."});
         }
     }
-
-    // A section whose raw data is far larger than its virtual size, with low
-    // entropy, is padding that never loads into memory.
     for (const auto& s : img.sections) {
         if (s.rawSize >= (4u << 20) && s.rawSize > s.virtualSize * 4 && s.entropy < 1.5) {
             out.push_back({Severity::Medium, "BLOAT_SECTION",
@@ -71,7 +74,6 @@ static void checkBuildId(const Image& img, std::vector<Finding>& out) {
     bool hasBuildInfo = false;
     for (const auto& s : img.sections)
         if (s.name == ".go.buildinfo") hasBuildInfo = true;
-
     if (!hasBuildId) {
         out.push_back({Severity::Medium, "GO_BUILDID_STRIPPED",
             "Go binary with no build ID",
@@ -79,23 +81,54 @@ static void checkBuildId(const Image& img, std::vector<Finding>& out) {
             (hasBuildInfo ? " despite a .go.buildinfo section" : "") +
             ". Stripping the build ID is a known signature-evasion step."});
     } else {
-        out.push_back({Severity::Info, "GO_BUILDID_PRESENT",
-            "Go build ID present", "Build ID intact — no tampering indicator here."});
+        out.push_back({Severity::Info, "GO_BUILDID_PRESENT", "Go build ID present",
+            "Build ID intact — no tampering indicator here."});
     }
 }
 
-// --- Signature: Authenticode certificate table ----------------------------
+// --- Signature + checksum -------------------------------------------------
+// PE header checksum, with the 4-byte CheckSum field treated as zero.
+static uint32_t computeChecksum(const Image& img) {
+    // The CheckSum field lives in the optional header; find its file offset.
+    uint32_t lfanew = 0;
+    std::memcpy(&lfanew, img.bytes.data() + 0x3C, 4);
+    size_t csOff = lfanew + 4 + 20 + 64; // PE sig + file header + opt header off 64
+    uint64_t sum = 0;
+    const auto& b = img.bytes;
+    size_t n = b.size();
+    for (size_t i = 0; i + 1 < n; i += 2) {
+        uint32_t w = b[i] | (uint32_t(b[i + 1]) << 8);
+        if (i == csOff || i == csOff + 2) w = 0; // zero out stored checksum
+        sum += w;
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    if (n & 1) { sum += b[n - 1]; sum = (sum & 0xffff) + (sum >> 16); }
+    sum = (sum & 0xffff) + (sum >> 16);
+    return static_cast<uint32_t>(sum) + static_cast<uint32_t>(n);
+}
+
 static void checkSignature(const Image& img, std::vector<Finding>& out) {
-    if (img.security.VirtualAddress == 0 || img.security.Size == 0) {
+    bool signed_ = img.security.VirtualAddress != 0 && img.security.Size != 0;
+    if (!signed_) {
         out.push_back({Severity::Low, "UNSIGNED", "No Authenticode signature",
             "No certificate table. Unsigned on its own is common, but combined "
             "with other flags it weakens provenance."});
-        return;
+    } else {
+        out.push_back({Severity::Info, "SIGNED", "Authenticode signature present",
+            "Certificate table of " + std::to_string(img.security.Size) +
+            " bytes. (Presence only — the chain is not validated.)"});
     }
-    out.push_back({Severity::Info, "SIGNED", "Authenticode signature present",
-        "Certificate table of " + std::to_string(img.security.Size) +
-        " bytes at offset " + std::to_string(img.security.VirtualAddress) +
-        ". (PE-Binaries reports presence; it does not validate the chain.)"});
+    if (img.checksumStored != 0) {
+        uint32_t calc = computeChecksum(img);
+        if (calc != img.checksumStored) {
+            out.push_back({signed_ ? Severity::Medium : Severity::Low, "CHECKSUM_INVALID",
+                "Header checksum mismatch",
+                "Stored " + std::to_string(img.checksumStored) + " vs computed " +
+                std::to_string(calc) +
+                (signed_ ? ". A signed file with a bad checksum was modified after signing."
+                         : ". The optional-header checksum does not match the file.")});
+        }
+    }
 }
 
 // --- Timestamp anomalies ---------------------------------------------------
@@ -115,17 +148,149 @@ static void checkTimestamp(const Image& img, std::vector<Finding>& out) {
     }
 }
 
-// --- Packing: suspiciously high-entropy executable sections ----------------
-static void checkPacking(const Image& img, std::vector<Finding>& out) {
+// --- Sections: entropy, RWX, odd names, entry point ------------------------
+static const std::set<std::string> kStdSections = {
+    ".text", ".data", ".rdata", ".bss", ".idata", ".edata", ".pdata", ".xdata",
+    ".reloc", ".rsrc", ".tls", ".debug", ".gfids", ".crt", ".00cfg", ".didat",
+    ".gehcont", ".textbss", ".sdata", ".voltbl",
+};
+static const std::set<std::string> kPackerSections = {
+    "upx0", "upx1", "upx2", ".aspack", ".adata", ".nsp0", ".nsp1", ".petite",
+    ".themida", "mpress1", "mpress2", ".vmp0", ".vmp1", ".enigma1",
+};
+
+static void checkSections(const Image& img, std::vector<Finding>& out) {
     for (const auto& s : img.sections) {
-        bool exec = (s.characteristics & 0x20000000) != 0; // IMAGE_SCN_MEM_EXECUTE
         if (s.rawSize >= 1024 && s.entropy > 7.2) {
-            out.push_back({exec ? Severity::Medium : Severity::Low, "HIGH_ENTROPY",
+            out.push_back({s.exec() ? Severity::Medium : Severity::Low, "HIGH_ENTROPY",
                 "High-entropy section '" + s.name + "'",
                 "Entropy " + std::to_string(s.entropy).substr(0, 4) + "/8" +
-                (exec ? " in an executable section" : "") +
+                (s.exec() ? " in an executable section" : "") +
                 " suggests packing or encryption."});
         }
+        if (s.exec() && s.write()) {
+            out.push_back({Severity::High, "RWX_SECTION",
+                "Writable + executable section '" + s.name + "'",
+                "Section is both writable and executable (RWX) — a strong indicator "
+                "of self-modifying code, unpacking stubs or injected shellcode."});
+        }
+        std::string ln = lower(s.name);
+        if (kPackerSections.count(ln)) {
+            out.push_back({Severity::Medium, "PACKER_SECTION",
+                "Known packer section '" + s.name + "'",
+                "Section name matches a known packer/protector layout."});
+        } else if (!s.name.empty() && s.name[0] != '/' && !kStdSections.count(ln)) {
+            out.push_back({Severity::Low, "ABNORMAL_SECTION",
+                "Unusual section name '" + s.name + "'",
+                "Not a standard toolchain section name — worth a look, as custom "
+                "names often come from packers or manual tampering."});
+        }
+    }
+
+    // Entry point placement.
+    if (img.entryPoint != 0) {
+        const Section* host = nullptr;
+        for (const auto& s : img.sections) {
+            uint32_t span = std::max(s.virtualSize, s.rawSize);
+            if (img.entryPoint >= s.virtualAddr && img.entryPoint < s.virtualAddr + span) {
+                host = &s; break;
+            }
+        }
+        if (!host) {
+            out.push_back({Severity::High, "EP_OUTSIDE",
+                "Entry point outside all sections",
+                "AddressOfEntryPoint 0x" + std::to_string(img.entryPoint) +
+                " maps to no section — typical of manual tampering or a broken loader."});
+        } else if (!host->exec()) {
+            out.push_back({Severity::High, "EP_NONEXEC",
+                "Entry point in a non-executable section",
+                "Execution starts in '" + host->name + "', which is not marked "
+                "executable — a packer/loader trick."});
+        } else if (host->write()) {
+            out.push_back({Severity::Medium, "EP_WRITABLE",
+                "Entry point in a writable section",
+                "Execution starts in writable '" + host->name +
+                "' — common for unpackers that rewrite their own code."});
+        }
+    }
+}
+
+// --- Imports: suspicious APIs, dynamic resolution, thin import table -------
+static void checkImports(const Image& img, std::vector<Finding>& out) {
+    std::set<std::string> apis;
+    size_t total = 0;
+    for (const auto& imp : img.imports)
+        for (const auto& fn : imp.funcs) { apis.insert(lower(fn)); ++total; }
+
+    auto has = [&](const char* a) { return apis.count(lower(a)) != 0; };
+    auto collect = [&](std::initializer_list<const char*> list) {
+        std::vector<std::string> f;
+        for (const char* a : list) if (has(a)) f.push_back(a);
+        return f;
+    };
+
+    std::vector<std::string> hits;
+    Severity worst = Severity::Info;
+    auto add = [&](const char* label, const std::vector<std::string>& found, Severity sev) {
+        if (found.empty()) return;
+        std::string line = std::string(label) + ": ";
+        for (size_t i = 0; i < found.size(); ++i) line += (i ? ", " : "") + found[i];
+        hits.push_back(line);
+        if (static_cast<int>(sev) > static_cast<int>(worst)) worst = sev;
+    };
+
+    // Injection: the real signal is a *combination*. A lone helper API is weak.
+    auto core = collect({"virtualallocex","writeprocessmemory","createremotethread",
+                         "ntcreatethreadex","queueuserapc","rtlcreateuserthread",
+                         "ntwritevirtualmemory"});
+    auto helper = collect({"setthreadcontext","ntmapviewofsection","ntunmapviewofsection",
+                           "resumethread"});
+    std::vector<std::string> inj = core;
+    inj.insert(inj.end(), helper.begin(), helper.end());
+    if (core.size() >= 2)      add("process injection", inj, Severity::High);
+    else if (core.size() == 1) add("process injection", inj, Severity::Medium);
+    else if (!helper.empty())  add("process-manipulation helpers", helper, Severity::Low);
+
+    add("anti-debug", collect({"isdebuggerpresent","checkremotedebuggerpresent",
+        "ntqueryinformationprocess","ntsetinformationthread"}), Severity::Medium);
+    add("credential/token", collect({"adjusttokenprivileges","openprocesstoken",
+        "lookupprivilegevaluea","lsaretrieveprivatedata"}), Severity::Medium);
+    add("input capture / hooking", collect({"setwindowshookexa","setwindowshookexw"}),
+        Severity::Medium);
+
+    if (!hits.empty()) {
+        std::string detail;
+        for (size_t i = 0; i < hits.size(); ++i) detail += (i ? "; " : "") + hits[i];
+        out.push_back({worst, "SUSPICIOUS_IMPORTS", "Notable imported APIs", detail + "."});
+    }
+
+    if (has("getprocaddress") && (has("loadlibrarya") || has("loadlibraryw")) && total < 15) {
+        out.push_back({Severity::Medium, "DYNAMIC_RESOLUTION",
+            "Dynamic API resolution with a thin import table",
+            "Imports GetProcAddress + LoadLibrary with only " + std::to_string(total) +
+            " named imports — APIs are likely resolved at runtime to hide behaviour."});
+    }
+
+    bool codeHeavy = false;
+    for (const auto& s : img.sections)
+        if (s.exec() && s.rawSize > 4096) codeHeavy = true;
+    if (codeHeavy && total <= 5) {
+        bool highEntropy = false;
+        for (const auto& s : img.sections) if (s.entropy > 7.0) highEntropy = true;
+        out.push_back({highEntropy ? Severity::Medium : Severity::Low, "FEW_IMPORTS",
+            "Very small import table",
+            "Only " + std::to_string(total) + " imported functions for a binary with "
+            "real code" + (highEntropy ? " and high-entropy sections — classic packed layout."
+                                       : " — the real import table may be hidden.")});
+    }
+}
+
+// --- TLS callbacks ---------------------------------------------------------
+static void checkTls(const Image& img, std::vector<Finding>& out) {
+    if (img.hasTlsCallbacks) {
+        out.push_back({Severity::Low, "TLS_CALLBACK", "TLS callback present",
+            "A TLS callback runs before the entry point — used for early "
+            "initialisation, but also for anti-debugging and stealth execution."});
     }
 }
 
@@ -135,12 +300,34 @@ std::vector<Finding> analyze(const Image& img) {
     checkBuildId(img, out);
     checkSignature(img, out);
     checkTimestamp(img, out);
-    checkPacking(img, out);
+    checkSections(img, out);
+    checkImports(img, out);
+    checkTls(img, out);
 
     std::stable_sort(out.begin(), out.end(), [](const Finding& a, const Finding& b) {
         return static_cast<int>(a.severity) > static_cast<int>(b.severity);
     });
     return out;
+}
+
+int riskScore(const std::vector<Finding>& findings) {
+    int score = 0;
+    for (const auto& f : findings) {
+        switch (f.severity) {
+            case Severity::High:   score += 40; break;
+            case Severity::Medium: score += 18; break;
+            case Severity::Low:    score += 6;  break;
+            default: break;
+        }
+    }
+    return std::min(100, score);
+}
+
+const char* riskLabel(int score) {
+    if (score >= 60) return "HIGH RISK";
+    if (score >= 25) return "SUSPICIOUS";
+    if (score > 0)   return "LOW RISK";
+    return "CLEAN";
 }
 
 } // namespace pes
