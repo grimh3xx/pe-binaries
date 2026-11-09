@@ -26,7 +26,7 @@ except Exception:
 
 MONO = "'JBM','JetBrains Mono',ui-monospace,Consolas,Menlo,monospace"
 
-# CentralTech palette
+# grimh3xx palette
 C = {
     "user": "#22D3EE", "punct": "#D5DDE8", "path": "#60A5FA", "cmd": "#F1F5FB",
     "text": "#C5CFDD", "muted": "#8B98AD", "cyan": "#22D3EE",
@@ -50,7 +50,7 @@ def seg(t, color="text", bold=False):
 
 
 def prompt():
-    return [seg("grimh3xx@centraltech", "user"), seg(":", "punct"),
+    return [seg("grimh3xx@pe-binaries", "user"), seg(":", "punct"),
             seg("~/pe-binaries", "path"), seg("$ ", "punct")]
 
 
